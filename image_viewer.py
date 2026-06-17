@@ -870,7 +870,15 @@ class ImageViewerApp:
             sidebar_header, text="(0)", font=(Colors.FONT_FAMILY, 11),
             fg=Colors.TEXT_SIDEBAR, bg=Colors.BG_SIDEBAR,
         )
-        self.folder_count_label.pack(side="right", padx=(0, 4))
+        self.folder_count_label.pack(side="right", padx=(0, 6))
+
+        # 回到顶部按钮（折叠所有文件夹并滚动到顶部）
+        top_btn = tk.Label(
+            sidebar_header, text="⬆", font=(Colors.FONT_FAMILY, 12),
+            fg=Colors.TEXT_SIDEBAR, bg=Colors.BG_SIDEBAR, cursor="hand2",
+        )
+        top_btn.pack(side="right", padx=(0, 2))
+        top_btn.bind("<Button-1>", lambda e: self._collapse_all_to_top())
 
         collapse_btn = tk.Label(
             sidebar_header, text="◀", font=(Colors.FONT_FAMILY, 10, "bold"),
@@ -942,12 +950,18 @@ class ImageViewerApp:
             pass
         return False
 
-    def _auto_collapse_all(self):
-        """启动时折叠所有有子目录的文件夹（递归）"""
+    def _collapse_all_to_top(self):
+        """折叠所有文件夹并滚动到顶部（快速回到顶层）"""
         self._collapsed_folders.clear()
         for folder in self.folders:
             self._collect_collapsible(folder)
         self._render_folder_list()
+        # 滚动到顶部
+        self.folder_canvas.yview_moveto(0)
+
+    def _auto_collapse_all(self):
+        """启动时折叠所有有子目录的文件夹（递归）"""
+        self._collapse_all_to_top()
 
     def _collect_collapsible(self, folder: str):
         """递归收集所有有子目录的文件夹（默认折叠，优先使用缓存）"""
