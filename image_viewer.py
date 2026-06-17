@@ -533,6 +533,7 @@ class ImageViewerApp:
         self._current_folder_filter: str | None = None  # 当前筛选的文件夹路径（再次点击取消）
         self._folder_struct_cache: dict = {}  # {path: {"subdirs": [str], "image_count": int}}
         self._folder_widgets: dict[str, tk.Frame] = {}  # 文件夹项控件缓存（path -> item_frame）
+        self._folder_drag_info: dict | None = None  # 拖拽排序状态
 
         # 虚拟网格状态
         self._card_slots: list[dict] = []       # [{frame, img_lbl, name_lbl, canvas_id, place_id}, ...]
@@ -924,6 +925,7 @@ class ImageViewerApp:
         self.folder_canvas.bind("<Button-4>", lambda e: self.folder_canvas.yview_scroll(-1, "units"))
         self.folder_canvas.bind("<Button-5>", lambda e: self.folder_canvas.yview_scroll(1, "units"))
 
+
         # 底部"添加"按钮
         add_btn_frame = tk.Frame(self.sidebar, bg=Colors.BG_SIDEBAR)
         add_btn_frame.pack(fill="x", padx=6, pady=8)
@@ -962,6 +964,113 @@ class ImageViewerApp:
     def _auto_collapse_all(self):
         """启动时折叠所有有子目录的文件夹（递归）"""
         self._collapse_all_to_top()
+
+    # ── 文件夹拖拽排序 ──────────────────────────────────────
+    def _on_folder_drag_start(self, event):
+        """记录拖拽起始位置，检测点击的顶层文件夹"""
+        y_inner = event.y_root - self.folder_inner.winfo_rooty()
+        folder, folder_idx = self._find_top_folder_at_y(y_inner)
+        if folder is None:
+            return
+        self._folder_drag_info = {
+            "folder": folder,
+            "folder_idx": folder_idx,
+            "start_x": event.x_root,
+            "start_y": event.y_root,
+            "drag_active": False,
+            "indicator": None,
+        }
+
+    def _on_folder_drag_move(self, event):
+        """拖拽移动：超过阈值后显示插入指示线"""
+        info = self._folder_drag_info
+        if info is None:
+            return
+        dx = event.x_root - info["start_x"]
+        dy = event.y_root - info["start_y"]
+        if not info["drag_active"] and abs(dx) < 5 and abs(dy) < 5:
+            return
+        info["drag_active"] = True
+        self._update_drag_indicator(event)
+
+    def _on_folder_drag_end(self, event):
+        """释放鼠标：如果是拖拽则重排"""
+        info = self._folder_drag_info
+        if info is None:
+            return
+        if info["indicator"]:
+            try:
+                info["indicator"].destroy()
+            except Exception:
+                pass
+        if info["drag_active"]:
+            y_inner = event.y_root - self.folder_inner.winfo_rooty()
+            _, target_idx = self._find_top_folder_at_y(y_inner)
+            if target_idx is not None and target_idx != info["folder_idx"]:
+                old_idx = info["folder_idx"]
+                if target_idx > old_idx:
+                    target_idx -= 1
+                else:
+                    target_idx = max(0, target_idx)
+                folder = self.folders.pop(old_idx)
+                self.folders.insert(target_idx, folder)
+                self._render_folder_list()
+                self._auto_collapse_all()
+                self._auto_save()
+        self._folder_drag_info = None
+
+    def _update_drag_indicator(self, event):
+        """在目标位置绘制插入指示线"""
+        info = self._folder_drag_info
+        if info is None:
+            return
+        y_inner = event.y_root - self.folder_inner.winfo_rooty()
+        target_folder, target_idx = self._find_top_folder_at_y(y_inner)
+        if info["indicator"]:
+            try:
+                info["indicator"].destroy()
+            except Exception:
+                pass
+            info["indicator"] = None
+        if target_folder is None:
+            return
+        target_frame = self._folder_widgets.get(target_folder)
+        if target_frame is None:
+            return
+        try:
+            item_y = target_frame.winfo_y()
+            item_h = target_frame.winfo_height()
+            if y_inner < item_y + item_h // 2:
+                line_y = item_y
+            else:
+                line_y = item_y + item_h
+            line = tk.Frame(self.folder_inner, bg=Colors.ACCENT, height=2)
+            line.place(x=10, y=line_y, width=self.folder_canvas.winfo_width() - 20, height=2)
+            info["indicator"] = line
+        except Exception:
+            pass
+
+    def _find_top_folder_at_y(self, y_inner: int) -> tuple[str | None, int | None]:
+        """根据 folder_inner 内 Y 坐标找到最近的顶层文件夹及索引"""
+        best_folder = None
+        best_idx = None
+        best_dist = float("inf")
+        for idx, folder in enumerate(self.folders):
+            frame = self._folder_widgets.get(folder)
+            if frame is None:
+                continue
+            try:
+                item_y = frame.winfo_y()
+                item_h = frame.winfo_height()
+                center_y = item_y + item_h // 2
+                dist = abs(y_inner - center_y)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_folder = folder
+                    best_idx = idx
+            except Exception:
+                continue
+        return best_folder, best_idx
 
     def _collect_collapsible(self, folder: str):
         """递归收集所有有子目录的文件夹（默认折叠，优先使用缓存）"""
@@ -1169,6 +1278,13 @@ class ImageViewerApp:
         # 无子目录的文件夹图标也可点击筛选（有子目录的已有折叠绑定）
         if not has_subdirs:
             icon.bind("<Button-1>", lambda e, f=folder: self._filter_by_folder(f))
+
+        # 拖拽排序绑定（顶层文件夹可拖拽重排）
+        if indent == 0:
+            for w in (item_frame, content, icon, name_label, count_label):
+                w.bind("<ButtonPress-1>", self._on_folder_drag_start, add="+")
+                w.bind("<B1-Motion>", self._on_folder_drag_move, add="+")
+                w.bind("<ButtonRelease-1>", self._on_folder_drag_end, add="+")
 
         # ── 右键菜单 ──
         self._bind_context_menu(content, folder)
