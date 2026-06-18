@@ -163,8 +163,9 @@ class ThumbnailLoader:
         self._executor.submit(self._load_task, img_path)
 
     def _cache_key(self, img_path: str) -> str:
-        """根据图片路径生成缓存文件名（MD5 哈希）"""
-        return hashlib.md5(img_path.encode("utf-8")).hexdigest() + ".png"
+        """根据图片路径 + 缩略图尺寸生成缓存文件名（MD5 哈希）"""
+        raw = f"{img_path}:{self.thumb_size[0]}x{self.thumb_size[1]}"
+        return hashlib.md5(raw.encode("utf-8")).hexdigest() + ".png"
 
     def _cache_filepath(self, img_path: str) -> str:
         """获取缓存文件的完整路径"""
@@ -274,189 +275,14 @@ class ThumbnailLoader:
         except Exception:
             return 0
 
+    def set_thumb_size(self, size: tuple[int, int]) -> None:
+        """更新缩略图尺寸并清空缓存（尺寸变化时调用）"""
+        self.thumb_size = size
+        self.clear()
+
     def shutdown(self) -> None:
         """关闭线程池"""
         self._executor.shutdown(wait=False)
-
-
-# ─── 原图查看器（双击打开，支持缩放和拖拽）──────────────
-class ImageViewerWindow(tk.Toplevel):
-    """原图查看窗口 —— 滚轮缩放 + 拖拽平移"""
-
-    def __init__(self, parent, img_path: str):
-        super().__init__(parent)
-        self.img_path = img_path
-        self.title(f"🔍 {os.path.basename(img_path)}")
-        self.geometry("1100x750")
-        self.minsize(400, 300)
-        self.configure(bg="#0F172A")
-
-        # 缩放和拖拽状态
-        self.zoom_level = 1.0
-        self._zoom_step = 0.15
-        self._min_zoom = 0.1
-        self._max_zoom = 10.0
-        self._drag_start_x = 0
-        self._drag_start_y = 0
-        self._canvas_img_id = None
-        self._original_img: Image.Image | None = None
-
-        # 加载图片
-        try:
-            self._original_img = Image.open(img_path)
-            self._original_img = self._original_img.convert("RGB")
-        except Exception as e:
-            tk.Label(self, text=f"无法加载图片\n{e}", fg="white", bg="#0F172A",
-                     font=(Colors.FONT_FAMILY, 12)).pack(expand=True)
-            return
-
-        # ── 顶部工具栏 ──
-        self._build_viewer_toolbar()
-
-        # ── 画布（主显示区） ──
-        self.canvas = tk.Canvas(self, bg="#0F172A", highlightthickness=0, bd=0)
-        self.canvas.pack(fill="both", expand=True)
-
-        # 绑定事件
-        self.canvas.bind("<MouseWheel>", self._on_mousewheel)       # Windows 滚轮
-        self.canvas.bind("<Button-4>", self._on_mousewheel_up)      # Linux 滚轮上
-        self.canvas.bind("<Button-5>", self._on_mousewheel_down)    # Linux 滚轮下
-        self.canvas.bind("<ButtonPress-1>", self._on_drag_start)
-        self.canvas.bind("<B1-Motion>", self._on_drag_move)
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.bind("<Configure>", lambda e: self._on_resize() if self._canvas_img_id else None)
-
-        # 首次显示：适配窗口
-        self.update_idletasks()
-        self._fit_to_window()
-
-        self.focus_set()
-
-    def _build_viewer_toolbar(self):
-        bar = tk.Frame(self, bg="#1E293B", height=42)
-        bar.pack(fill="x", side="top")
-        bar.pack_propagate(False)
-
-        # 文件名
-        name = os.path.basename(self.img_path)
-        tk.Label(bar, text=f"  {name}", font=(Colors.FONT_FAMILY, 10, "bold"),
-                 fg="#CBD5E1", bg="#1E293B").pack(side="left", padx=10)
-
-        # 图片信息
-        try:
-            w, h = self._original_img.size
-            mb = os.path.getsize(self.img_path) / (1024 * 1024)
-            info = f"{w}×{h}  |  {mb:.2f} MB"
-        except Exception:
-            info = ""
-        tk.Label(bar, text=info, font=(Colors.FONT_FAMILY, 9),
-                 fg="#94A3B8", bg="#1E293B").pack(side="left", padx=6)
-
-        # 右侧按钮
-        btn_style = {"font": (Colors.FONT_FAMILY, 11), "relief": "flat", "bd": 0,
-                      "padx": 10, "pady": 4, "cursor": "hand2",
-                      "bg": "#334155", "fg": "#CBD5E1",
-                      "activebackground": "#475569", "activeforeground": "white"}
-
-        self.zoom_label = tk.Label(bar, text="100%", font=(Colors.FONT_FAMILY, 9, "bold"),
-                                    fg="#CBD5E1", bg="#1E293B", width=6)
-        self.zoom_label.pack(side="right", padx=(0, 8))
-
-        tk.Button(bar, text="🔍＋", command=self._zoom_in, **btn_style).pack(side="right", padx=2)
-        tk.Button(bar, text="🔍－", command=self._zoom_out, **btn_style).pack(side="right", padx=2)
-        tk.Button(bar, text="⊞ 适配", command=self._fit_to_window, **btn_style).pack(side="right", padx=2)
-        tk.Button(bar, text="1:1", command=self._zoom_original, **btn_style).pack(side="right", padx=2)
-
-    # ── 缩放 ──
-    def _zoom_in(self):
-        self._apply_zoom(self.zoom_level + self._zoom_step)
-
-    def _zoom_out(self):
-        self._apply_zoom(self.zoom_level - self._zoom_step)
-
-    def _zoom_original(self):
-        self._apply_zoom(1.0)
-
-    def _fit_to_window(self):
-        """适配窗口大小"""
-        if not self._original_img:
-            return
-        cw = self.canvas.winfo_width() or 800
-        ch = self.canvas.winfo_height() or 600
-        iw, ih = self._original_img.size
-        ratio = min(cw / iw, ch / ih) * 0.92
-        self._apply_zoom(ratio)
-
-    def _apply_zoom(self, new_zoom: float):
-        """应用缩放并重绘"""
-        if not self._original_img:
-            return
-        new_zoom = max(self._min_zoom, min(self._max_zoom, new_zoom))
-        if abs(new_zoom - self.zoom_level) < 0.01 and self._canvas_img_id:
-            return
-        self.zoom_level = new_zoom
-
-        iw, ih = self._original_img.size
-        nw, nh = int(iw * self.zoom_level), int(ih * self.zoom_level)
-
-        if nw < 5 or nh < 5:
-            return
-
-        # 缩放图片
-        resized = self._original_img.resize((nw, nh), Image.LANCZOS)
-        self._tk_img = ImageTk.PhotoImage(resized)
-
-        # 更新画布
-        if self._canvas_img_id:
-            self.canvas.delete(self._canvas_img_id)
-        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        cx, cy = max(0, (cw - nw) // 2), max(0, (ch - nh) // 2)
-        self._canvas_img_id = self.canvas.create_image(cx, cy, anchor="nw", image=self._tk_img)
-        self.canvas.config(scrollregion=(0, 0, max(nw, cw), max(nh, ch)))
-
-        # 更新缩放百分比
-        self.zoom_label.config(text=f"{int(self.zoom_level * 100)}%")
-
-    def _on_resize(self):
-        """窗口大小改变时，如果图片小于窗口则居中"""
-        if not self._canvas_img_id or not self._original_img:
-            return
-        cw, ch = self.canvas.winfo_width(), self.canvas.winfo_height()
-        iw, ih = self._original_img.size
-        nw, nh = int(iw * self.zoom_level), int(ih * self.zoom_level)
-        cx, cy = max(0, (cw - nw) // 2), max(0, (ch - nh) // 2)
-        self.canvas.coords(self._canvas_img_id, cx, cy)
-        self.canvas.config(scrollregion=(0, 0, max(nw, cw), max(nh, ch)))
-
-    # ── 滚轮缩放 ──
-    def _on_mousewheel(self, event):
-        """Windows: event.delta > 0 向上滚 = 放大"""
-        if event.delta > 0:
-            self._apply_zoom(self.zoom_level + self._zoom_step)
-        else:
-            self._apply_zoom(self.zoom_level - self._zoom_step)
-
-    def _on_mousewheel_up(self, event):
-        """Linux: Button-4"""
-        self._apply_zoom(self.zoom_level + self._zoom_step)
-
-    def _on_mousewheel_down(self, event):
-        """Linux: Button-5"""
-        self._apply_zoom(self.zoom_level - self._zoom_step)
-
-    # ── 拖拽平移 ──
-    def _on_drag_start(self, event):
-        self._drag_start_x = event.x
-        self._drag_start_y = event.y
-
-    def _on_drag_move(self, event):
-        if not self._canvas_img_id:
-            return
-        dx = event.x - self._drag_start_x
-        dy = event.y - self._drag_start_y
-        self.canvas.move(self._canvas_img_id, dx, dy)
-        self._drag_start_x = event.x
-        self._drag_start_y = event.y
 
 
 # ─── 自定义滚动框架 ──────────────────────────────────────
@@ -509,11 +335,16 @@ class ScrollableFrame(ttk.Frame):
 
 # ─── 主应用程序 ───────────────────────────────────────────
 class ImageViewerApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, dpi_scale: float = 1.0):
         self.root = root
+        self._dpi_scale = dpi_scale  # 用于缩放所有硬编码像素值
         self.root.title(" FWD Image Search")
-        self.root.geometry("1280x800")
-        self.root.minsize(960, 600)
+        self.root.geometry(
+            f"{int(1280 * dpi_scale)}x{int(800 * dpi_scale)}"
+        )
+        self.root.minsize(
+            int(960 * dpi_scale), int(600 * dpi_scale)
+        )
         self.root.configure(bg=Colors.BG_MAIN)
 
         # 配置文件路径
@@ -539,13 +370,36 @@ class ImageViewerApp:
         self._card_slots: list[dict] = []       # [{frame, img_lbl, name_lbl, canvas_id, place_id}, ...]
         self._displayed_images: list[str] = []   # 当前过滤后的图片列表
         self._card_cols: int = 1                 # 当前列数
-        self._place_size: int = 160              # thumb_size(150) + padding(10)
+
+        # 先从配置文件读取用户缩放倍率，确保 UI 构建时使用正确的尺寸
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, "r", encoding="utf-8") as f:
+                    self._user_scale = json.load(f).get("user_scale", 1.0)
+            else:
+                self._user_scale = 1.0
+        except Exception:
+            self._user_scale = 1.0
+
+        # DPI 感知的像素尺寸缩放（动态读取 _user_scale）
+        def _sp(v: int) -> int:
+            """将基准尺寸按 DPI × 用户缩放 动态计算"""
+            return int(v * self._dpi_scale * self._user_scale)
+
+        self._sp = _sp
+
+        # 缩略图及卡片尺寸（基准 150px，按 DPI 缩放）
+        self.THUMB_SIZE = _sp(150)
+        self.CARD_PAD = _sp(10)
+        self.CARD_WIDTH = self.THUMB_SIZE + _sp(4)
+        self.CARD_HEIGHT = self.THUMB_SIZE + _sp(46)
+        self._place_size = self.THUMB_SIZE + self.CARD_PAD
 
         # 设置图标
         self._set_app_icon()
 
         # 后台缩略图加载器
-        self.thumbnail_loader = ThumbnailLoader(root, thumb_size=(150, 150))
+        self.thumbnail_loader = ThumbnailLoader(root, thumb_size=(self.THUMB_SIZE, self.THUMB_SIZE))
         self.thumbnail_loader.on_loaded = self._on_thumbnail_loaded
 
         # 拖拽上传
@@ -610,6 +464,9 @@ class ImageViewerApp:
 
                 self._default_upload_target = cfg.get("default_upload_target", "")
                 self.sidebar_collapsed = cfg.get("sidebar_collapsed", False)
+                self._user_scale = cfg.get("user_scale", 1.0)
+                # 更新缩放标签显示
+                self._scale_label.config(text=f"{int(self._user_scale * 100)}%")
 
                 # 恢复窗口几何
                 geo = cfg.get("window_geometry", "")
@@ -628,6 +485,7 @@ class ImageViewerApp:
                 "folders": self.folders,
                 "default_upload_target": self._default_upload_target,
                 "sidebar_collapsed": self.sidebar_collapsed,
+                "user_scale": self._user_scale,
                 "window_geometry": self.root.geometry(),
             }
             with open(self.config_path, "w", encoding="utf-8") as f:
@@ -649,7 +507,7 @@ class ImageViewerApp:
 
     # ── 顶部工具栏 ────────────────────────────────────────
     def _build_toolbar(self):
-        toolbar = tk.Frame(self.root, bg=Colors.BG_TOOLBAR, height=56)
+        toolbar = tk.Frame(self.root, bg=Colors.BG_TOOLBAR, height=self._sp(56))
         toolbar.pack(fill="x", side="top")
         toolbar.pack_propagate(False)
 
@@ -772,6 +630,48 @@ class ImageViewerApp:
         )
         self.btn_refresh.pack(side="left", padx=3)
 
+        # ── 缩放比例调节 ──
+        sep3 = tk.Frame(inner, bg=Colors.BORDER, width=1)
+        sep3.pack(side="left", fill="y", padx=10)
+
+        scale_frame = tk.Frame(inner, bg=Colors.BG_TOOLBAR)
+        scale_frame.pack(side="left")
+
+        tk.Label(
+            scale_frame, text="🔍", font=(Colors.FONT_FAMILY, 12),
+            fg=Colors.TEXT_SECONDARY, bg=Colors.BG_TOOLBAR,
+        ).pack(side="left", padx=(0, 4))
+
+        scale_minus = tk.Label(
+            scale_frame, text="−", font=(Colors.FONT_FAMILY, 13, "bold"),
+            fg=Colors.ACCENT, bg=Colors.BG_TOOLBAR, cursor="hand2",
+        )
+        scale_minus.pack(side="left")
+        scale_minus.bind("<Button-1>", lambda e: self._adjust_scale(-0.1))
+
+        self._scale_label = tk.Label(
+            scale_frame, text="100%",
+            font=(Colors.FONT_FAMILY, 11, "bold"),
+            fg=Colors.TEXT_PRIMARY, bg=Colors.BG_TOOLBAR, width=5,
+            anchor="center",
+        )
+        self._scale_label.pack(side="left", padx=2)
+
+        scale_plus = tk.Label(
+            scale_frame, text="＋", font=(Colors.FONT_FAMILY, 13, "bold"),
+            fg=Colors.ACCENT, bg=Colors.BG_TOOLBAR, cursor="hand2",
+        )
+        scale_plus.pack(side="left")
+        scale_plus.bind("<Button-1>", lambda e: self._adjust_scale(0.1))
+
+        # 重置按钮
+        scale_reset = tk.Label(
+            scale_frame, text="↺", font=(Colors.FONT_FAMILY, 11),
+            fg=Colors.TEXT_SECONDARY, bg=Colors.BG_TOOLBAR, cursor="hand2",
+        )
+        scale_reset.pack(side="left", padx=(4, 0))
+        scale_reset.bind("<Button-1>", lambda e: self._reset_scale())
+
         # ── 底部分隔线 ──
         border = tk.Frame(toolbar, bg=Colors.BORDER, height=1)
         border.pack(fill="x", side="bottom")
@@ -794,6 +694,31 @@ class ImageViewerApp:
             )
         return btn
 
+    def _adjust_scale(self, delta: float):
+        """调整用户缩放倍率（每次增减 10%）"""
+        new_scale = round(self._user_scale + delta, 2)
+        if new_scale < 0.5 or new_scale > 3.0:
+            return
+        self._user_scale = new_scale
+        self._scale_label.config(text=f"{int(new_scale * 100)}%")
+        # 更新缩略图尺寸
+        self.THUMB_SIZE = self._sp(150)
+        self.CARD_PAD = self._sp(10)
+        self.CARD_WIDTH = self.THUMB_SIZE + self._sp(4)
+        self.CARD_HEIGHT = self.THUMB_SIZE + self._sp(46)
+        self._place_size = self.THUMB_SIZE + self.CARD_PAD
+        # 更新缩略图加载器尺寸并清空缓存
+        self.thumbnail_loader.set_thumb_size((self.THUMB_SIZE, self.THUMB_SIZE))
+        self._render_thumbnails(folder_filter=self._current_folder_filter)
+        self._update_preview_panel()
+        self._auto_save()
+
+    def _reset_scale(self):
+        """重置缩放为 100%"""
+        if self._user_scale == 1.0:
+            return
+        self._adjust_scale(1.0 - self._user_scale)
+
     # ── 主布局（三栏） ────────────────────────────────────
     def _build_main_layout(self):
         self.main = tk.Frame(self.root, bg=Colors.BG_MAIN)
@@ -804,14 +729,14 @@ class ImageViewerApp:
         self.main.grid_columnconfigure(2, weight=0)
 
         # ── 左侧边栏 ──
-        self.sidebar = tk.Frame(self.main, bg=Colors.BG_SIDEBAR, width=240)
+        self.sidebar = tk.Frame(self.main, bg=Colors.BG_SIDEBAR, width=self._sp(240))
         self.sidebar.grid(row=0, column=0, sticky="ns")
         self.sidebar.pack_propagate(False)
         self.sidebar.grid_propagate(False)
         self._build_sidebar()
 
         # ── 折叠后的窄条 ──
-        self.collapsed_bar = tk.Frame(self.main, bg=Colors.BG_SIDEBAR, width=40)
+        self.collapsed_bar = tk.Frame(self.main, bg=Colors.BG_SIDEBAR, width=self._sp(40))
         self.collapsed_bar.grid_propagate(False)
 
         expand_btn = tk.Label(
@@ -851,7 +776,7 @@ class ImageViewerApp:
         self.empty_label.place(relx=0.5, rely=0.5, anchor="center")
 
         # ── 右侧预览面板 ──
-        self.preview_panel = tk.Frame(self.main, bg=Colors.BG_CARD, width=300)
+        self.preview_panel = tk.Frame(self.main, bg=Colors.BG_CARD, width=self._sp(300))
         self.preview_panel.grid(row=0, column=2, sticky="ns")
         self.preview_panel.grid_propagate(False)
         self._build_preview_panel()
@@ -1045,7 +970,7 @@ class ImageViewerApp:
             else:
                 line_y = item_y + item_h
             line = tk.Frame(self.folder_inner, bg=Colors.ACCENT, height=2)
-            line.place(x=10, y=line_y, width=self.folder_canvas.winfo_width() - 20, height=2)
+            line.place(x=self._sp(10), y=line_y, width=self.folder_canvas.winfo_width() - self._sp(20), height=2)
             info["indicator"] = line
         except Exception:
             pass
@@ -1113,7 +1038,7 @@ class ImageViewerApp:
         parent_frame = self._folder_widgets.get(folder)
         if not parent_frame:
             return
-        child_indent = indent + 20
+        child_indent = indent + self._sp(20)
         # 找到父项在 pack 顺序中的位置，在其后插入子项
         for sub in entry["subdirs"]:
             if sub in self._folder_widgets:
@@ -1225,7 +1150,7 @@ class ImageViewerApp:
         entry = self._folder_struct_cache.get(folder)
         subdirs = entry["subdirs"] if entry is not None else []
         for sub in subdirs:
-            count += self._render_folder_tree(sub, index + count, indent + 20)
+            count += self._render_folder_tree(sub, index + count, indent + self._sp(20))
         return count
 
     def _create_folder_item(self, folder: str, index: int, indent: int = 0):
@@ -1356,7 +1281,7 @@ class ImageViewerApp:
         if self.sidebar_collapsed:
             self.collapsed_bar.grid_remove()
             self.sidebar.grid(row=0, column=0, sticky="ns")
-            self.sidebar.config(width=240)
+            self.sidebar.config(width=self._sp(240))
             self.sidebar_collapsed = False
         else:
             self.sidebar.grid_remove()
@@ -1378,7 +1303,7 @@ class ImageViewerApp:
 
         preview_img_frame = tk.Frame(self.preview_panel, bg=Colors.BG_INPUT)
         preview_img_frame.pack(fill="x", padx=16, pady=12)
-        preview_img_frame.config(height=240)
+        preview_img_frame.config(height=self._sp(240))
         preview_img_frame.pack_propagate(False)
 
         self.preview_label = tk.Label(
@@ -1462,7 +1387,7 @@ class ImageViewerApp:
 
     # ── 状态栏 ────────────────────────────────────────────
     def _build_statusbar(self):
-        status = tk.Frame(self.root, bg=Colors.BG_TOOLBAR, height=32)
+        status = tk.Frame(self.root, bg=Colors.BG_TOOLBAR, height=self._sp(32))
         status.pack(fill="x", side="bottom")
         status.pack_propagate(False)
 
@@ -1744,13 +1669,13 @@ class ImageViewerApp:
         if not self._displayed_images:
             return
         new_width = self.thumbnail_area.canvas.winfo_width()
-        if new_width < 100:
+        if new_width < self._sp(100):
             return
         new_height = self.thumbnail_area.winfo_height()
-        # 宽度变化超过 30px 或高度变化超过 80px 才算有效变化
-        width_changed = abs(new_width - self._last_thumb_container_width) >= 30
+        # 宽度变化超过 30px 或高度变化超过 80px 才算有效变化（按 DPI 缩放）
+        width_changed = abs(new_width - self._last_thumb_container_width) >= self._sp(30)
         height_changed = hasattr(self, '_last_thumb_container_height') and \
-            abs((new_height or 0) - self._last_thumb_container_height) >= 80
+            abs((new_height or 0) - self._last_thumb_container_height) >= self._sp(80)
         if not width_changed and not height_changed:
             return
         self._last_thumb_container_width = new_width
@@ -1765,10 +1690,6 @@ class ImageViewerApp:
         self._sync_cards()
 
     # ── 虚拟滚动网格渲染 ───────────────────────────────────
-    THUMB_SIZE = 150
-    CARD_PAD = 10
-    CARD_WIDTH = THUMB_SIZE + 4        # 卡片框架宽度
-    CARD_HEIGHT = THUMB_SIZE + 46      # 卡片框架高度（图片 + 文件名 + 间距）
 
     def _get_filtered_images(self, folder_filter: str | None = None) -> list[str]:
         """根据搜索/筛选条件过滤图片（仅操作字符串，不创建控件）"""
@@ -1844,11 +1765,11 @@ class ImageViewerApp:
             self.empty_label.place_forget()
 
         container_width = self.thumbnail_area.canvas.winfo_width()
-        if container_width < 100:
-            container_width = 700
+        if container_width < self._sp(100):
+            container_width = self._sp(700)
         self._last_thumb_container_width = container_width
 
-        cols = max(1, (container_width - 20) // (self.CARD_WIDTH + self.CARD_PAD))
+        cols = max(1, (container_width - self._sp(20)) // (self.CARD_WIDTH + self.CARD_PAD))
         total_rows = max(1, (len(images) + cols - 1) // cols)
         canvas_height = total_rows * (self.CARD_HEIGHT + self.CARD_PAD) + self.CARD_PAD
 
@@ -1859,13 +1780,13 @@ class ImageViewerApp:
 
         # 计算需要的卡片槽位数
         viewport_h = self.thumbnail_area.canvas.winfo_height()
-        if viewport_h < 100:
+        if viewport_h < self._sp(100):
             # 回退：使用父容器高度或主窗口高度估算
             parent_h = self.thumbnail_area.winfo_height()
-            if parent_h and parent_h > 100:
+            if parent_h and parent_h > self._sp(100):
                 viewport_h = parent_h
             else:
-                viewport_h = max(600, self.root.winfo_height() - 120)
+                viewport_h = max(self._sp(600), self.root.winfo_height() - self._sp(120))
         visible_rows = viewport_h // (self.CARD_HEIGHT + self.CARD_PAD) + 3  # +3 行缓冲
         total_slots = min(visible_rows * cols, len(images))
 
@@ -1967,8 +1888,8 @@ class ImageViewerApp:
         img_lbl = slot["img_lbl"]
         name_lbl = slot["name_lbl"]
 
-        # 文件名
-        name = os.path.basename(img_path)
+        # 文件名（不显示后缀）
+        name = os.path.splitext(os.path.basename(img_path))[0]
         display_name = name if len(name) <= 18 else name[:15] + "..."
         name_lbl.config(text=display_name)
 
@@ -2052,8 +1973,12 @@ class ImageViewerApp:
                 break
 
     def _open_image_viewer(self, img_path: str):
-        """双击打开原图查看窗口"""
-        ImageViewerWindow(self.root, img_path)
+        """双击使用系统默认程序打开图片"""
+        if os.name == "nt":
+            os.startfile(img_path)
+        else:
+            import subprocess
+            subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", img_path])
 
     def _on_image_select(self, img_path: str):
         """选中某张图片"""
@@ -2095,7 +2020,7 @@ class ImageViewerApp:
         try:
             preview_img = Image.open(img_path)
             preview_img = preview_img.convert("RGB")
-            max_w, max_h = 280, 240
+            max_w, max_h = self._sp(280), self._sp(240)
             w, h = preview_img.size
             ratio = min(max_w / w, max_h / h)
             new_w, new_h = int(w * ratio), int(h * ratio)
@@ -2253,7 +2178,7 @@ def main():
             pass
 
     # 获取实际 DPI 缩放因子
-    scale = _get_windows_dpi_scale() if os.name == "nt" else 1.0
+    dpi_scale = _get_windows_dpi_scale() if os.name == "nt" else 1.0
 
     if _DND_AVAILABLE:
         root = TkinterDnD.Tk()
@@ -2261,11 +2186,11 @@ def main():
         root = tk.Tk()
 
     # 设置 tkinter 全局缩放，使高 DPI 屏幕下文字和控件自适应
-    root.tk.call("tk", "scaling", scale)
+    root.tk.call("tk", "scaling", dpi_scale)
 
     root.title(" FWD Image Search")
 
-    app = ImageViewerApp(root)
+    app = ImageViewerApp(root, dpi_scale)
     root.mainloop()
 
 
