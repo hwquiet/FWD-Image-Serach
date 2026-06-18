@@ -241,7 +241,7 @@ class ImageViewerApp:
                 search_frame, textvariable=sv,
                 font=(Colors.FONT_FAMILY, 11), bg=Colors.BG_INPUT,
                 fg=Colors.TEXT_PLACEHOLDER, insertbackground=Colors.TEXT_PRIMARY,
-                relief="flat", bd=8, width=13,
+                relief="flat", bd=8, width=20,
             )
             entry.pack(side="left", padx=(0, 6))
             entry.insert(0, placeholder)
@@ -1769,6 +1769,7 @@ class ImageViewerApp:
                 self.sidebar_collapsed = False
                 self._toggle_sidebar()
             self._auto_collapse_all()
+            self.search_entry1.focus_set()
             return
 
         # 没有持久化配置时，扫描默认目录
@@ -1786,3 +1787,4 @@ class ImageViewerApp:
         self._render_folder_list()
         self.refresh_all()
         self._auto_collapse_all()
+        self.search_entry1.focus_set()
