@@ -1524,7 +1524,7 @@ class ImageViewerApp:
                 new_paths.append(img_path)
 
         if new_paths:
-            self.thumbnail_loader.preload_batch(new_paths[:24])
+            self.thumbnail_loader.preload_batch(new_paths[:48])
 
     def _update_card_content(self, slot: dict, img_path: str):
         """更新单个卡片的内容（图片 + 文件名 + 事件绑定）"""

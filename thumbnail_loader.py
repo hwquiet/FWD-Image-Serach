@@ -18,7 +18,7 @@ from PIL import Image, ImageTk
 class ThumbnailLoader:
     """后台线程池加载缩略图，内存 LRU 缓存 + 磁盘持久化缓存，UI 回调"""
 
-    MAX_CACHE = 300
+    MAX_CACHE = 500
     DISK_CACHE_DIR = os.path.join(os.path.expanduser("~"), ".image_manager", "thumbnails")
 
     def __init__(self, root: tk.Tk, thumb_size: tuple[int, int] = (150, 150)):
@@ -27,7 +27,10 @@ class ThumbnailLoader:
         self.cache: OrderedDict[str, tk.PhotoImage] = OrderedDict()
         self._pending: set[str] = set()
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=2)
+        # 根据 CPU 核心数动态设置线程池，提升批量加载吞吐量
+        cpu_count = os.cpu_count() or 4
+        workers = max(4, min(8, cpu_count))
+        self._executor = ThreadPoolExecutor(max_workers=workers)
         self.on_loaded: callable | None = None  # (img_path, photo) -> void
         # 确保磁盘缓存目录存在
         os.makedirs(self.DISK_CACHE_DIR, exist_ok=True)
