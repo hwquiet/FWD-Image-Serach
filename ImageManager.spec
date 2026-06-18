@@ -3,7 +3,7 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('app_icon.ico', '.')]
 binaries = []
-hiddenimports = ['tkinter', 'PIL', 'PIL.Image', 'PIL.ImageTk', 'PIL.ImageDraw']
+hiddenimports = ['tkinter', 'PIL', 'PIL.Image', 'PIL.ImageTk', 'PIL.ImageDraw', 'config', 'thumbnail_loader', 'scrollable_frame', 'app']
 tmp_ret = collect_all('tkinterdnd2')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
