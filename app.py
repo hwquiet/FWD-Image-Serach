@@ -462,6 +462,9 @@ class ImageViewerApp:
         self.thumbnail_area.grid(row=0, column=0, sticky="nsew")
         self.thumbnail_area.set_on_scroll(self._on_scroll_sync)
 
+        # 绑定 Delete 键删除当前选中的图片
+        self.root.bind_all("<Delete>", self._on_delete_key, add="+")
+
         # 监听缩略图容器宽度变化 → 防抖重排
         self.thumbnail_area.canvas.bind("<Configure>", self._on_thumbnail_container_resize, add="+")
 
@@ -1560,6 +1563,7 @@ class ImageViewerApp:
             widget.unbind("<Double-Button-1>")
             widget.unbind("<Enter>")
             widget.unbind("<Leave>")
+            widget.unbind("<Button-3>" if os.name == "nt" else "<Button-2>")
 
         # 单击选中
         card.bind("<Button-1>", lambda e, p=img_path: self._on_image_select(p))
@@ -1570,6 +1574,12 @@ class ImageViewerApp:
         card.bind("<Double-Button-1>", lambda e, p=img_path: self._open_image_viewer(p))
         img_lbl.bind("<Double-Button-1>", lambda e, p=img_path: self._open_image_viewer(p))
         name_lbl.bind("<Double-Button-1>", lambda e, p=img_path: self._open_image_viewer(p))
+
+        # 右键菜单
+        btn = "<Button-3>" if os.name == "nt" else "<Button-2>"
+        card.bind(btn, lambda e, p=img_path: self._show_image_context_menu(e, p))
+        img_lbl.bind(btn, lambda e, p=img_path: self._show_image_context_menu(e, p))
+        name_lbl.bind(btn, lambda e, p=img_path: self._show_image_context_menu(e, p))
 
         # 悬停高亮
         def on_enter(event, c=card, p=img_path):
@@ -1682,6 +1692,160 @@ class ImageViewerApp:
             self.info_text.config(text=info)
         except Exception:
             self.info_text.config(text="")
+
+    def _on_delete_key(self, event):
+        """Delete 键删除当前选中的图片（焦点在输入框时不拦截）"""
+        try:
+            focused = self.root.focus_get()
+            if isinstance(focused, tk.Entry):
+                return
+        except Exception:
+            pass
+        self._delete_image()
+
+    @staticmethod
+    def _send_to_trash(path: str) -> bool:
+        """将文件移动到系统回收站（Windows 使用 SHFileOperation，其他平台回退到 os.remove）"""
+        if not os.path.exists(path):
+            return False
+
+        if os.name == "nt":
+            import ctypes
+            from ctypes import wintypes
+
+            # 双空字符结尾（SHFileOperation 要求）
+            path_buf = path + "\0\0"
+
+            # SHFILEOPSTRUCTW 结构体
+            class SHFILEOPSTRUCTW(ctypes.Structure):
+                _fields_ = [
+                    ("hwnd", wintypes.HWND),
+                    ("wFunc", wintypes.UINT),
+                    ("pFrom", wintypes.LPCWSTR),
+                    ("pTo", wintypes.LPCWSTR),
+                    ("fFlags", wintypes.USHORT),
+                    ("fAnyOperationsAborted", wintypes.BOOL),
+                    ("hNameMappings", wintypes.LPVOID),
+                    ("lpszProgressTitle", wintypes.LPCWSTR),
+                ]
+
+            FO_DELETE = 3
+            FOF_ALLOWUNDO = 0x40       # 移入回收站
+            FOF_NOCONFIRMATION = 0x10  # 不弹确认框
+            FOF_SILENT = 0x4           # 不显示进度条
+
+            file_op = SHFILEOPSTRUCTW()
+            file_op.hwnd = 0
+            file_op.wFunc = FO_DELETE
+            file_op.pFrom = path_buf
+            file_op.pTo = None
+            file_op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+            file_op.fAnyOperationsAborted = False
+            file_op.hNameMappings = None
+            file_op.lpszProgressTitle = None
+
+            result = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(file_op))
+            return result == 0 and not file_op.fAnyOperationsAborted
+        else:
+            # macOS / Linux：尝试用系统命令移入回收站
+            import subprocess
+            try:
+                if sys.platform == "darwin":
+                    subprocess.run(["osascript", "-e",
+                        f'tell app "Finder" to delete POSIX file "{path}"'], check=True)
+                else:
+                    # Linux: 尝试 trash-put（需安装 trash-cli），否则直接删除
+                    subprocess.run(["trash-put", path], check=True)
+            except Exception:
+                # 回退：永久删除
+                try:
+                    os.remove(path)
+                except Exception:
+                    return False
+            return True
+
+    def _delete_image(self, img_path: str | None = None):
+        """删除图片（移入回收站，无确认框）"""
+        target = img_path or self.current_image
+        if not target or not os.path.exists(target):
+            return
+
+        if not self._send_to_trash(target):
+            messagebox.showerror("删除失败", f"无法删除文件：\n{target}")
+            return
+
+        try:
+            # 从列表中移除
+            if target in self.all_images:
+                self.all_images.remove(target)
+            # 清除缩略图缓存
+            with self.thumbnail_loader._lock:
+                self.thumbnail_loader.cache.pop(target, None)
+            # 清除选中状态
+            if self._selected_path == target:
+                self._selected_path = ""
+                self.current_image = None
+            # 刷新显示
+            self._render_thumbnails(folder_filter=self._current_folder_filter)
+            self._update_preview_panel()
+            self.status_label.config(text=f"已移入回收站：{os.path.basename(target)}")
+        except Exception as e:
+            # 文件已删除但状态更新失败，尝试恢复
+            print(f"删除后状态更新失败：{e}")
+
+    def _show_image_context_menu(self, event, img_path: str):
+        """显示图片右键菜单"""
+        try:
+            self._on_image_select(img_path)
+        except Exception:
+            pass
+
+        try:
+            menu = tk.Menu(self.root, tearoff=0, font=(Colors.FONT_FAMILY, 10),
+                           bg=Colors.BG_CARD, fg=Colors.TEXT_PRIMARY,
+                           activebackground=Colors.ACCENT, activeforeground="white")
+
+            menu.add_command(
+                label="🗑️ 删除",
+                command=lambda p=img_path: self._delete_image(p),
+            )
+            menu.add_command(
+                label="📂 打开所在文件夹",
+                command=lambda p=img_path: self._open_image_location(p),
+            )
+            menu.add_command(
+                label="📋 复制路径",
+                command=lambda p=img_path: self._copy_image_path(p),
+            )
+
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+        except Exception:
+            pass
+
+    def _open_image_location(self, img_path: str):
+        """在资源管理器中打开图片所在文件夹（右键菜单调用）"""
+        try:
+            folder = os.path.dirname(img_path)
+            if os.name == "nt":
+                os.startfile(folder)
+            else:
+                import subprocess
+                subprocess.run(["open" if sys.platform == "darwin" else "xdg-open", folder])
+        except Exception as e:
+            messagebox.showerror("错误", f"无法打开文件夹：\n{e}")
+
+    def _copy_image_path(self, img_path: str):
+        """复制图片路径到剪贴板（右键菜单调用）"""
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(img_path)
+            self.root.update()
+            self.status_label.config(text="已复制路径到剪贴板")
+        except Exception:
+            pass
 
     def rename_image(self):
         """重命名当前选中的图片（后缀名不可修改）"""
